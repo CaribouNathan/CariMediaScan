@@ -209,13 +209,57 @@ if [[ "${${f##*.}:l}" == "braw" ]]; then
     b_date=$(md ${P}_date_recorded)
     b_env=$(md ${P}_environment)
     b_daynight=$(md ${P}_day_night)
+    b_focusdist=""   # distance de mise au point (rempli en repli réseau ci-dessous)
 
     nd() { [[ -n "$1" ]] && echo "$1" || echo "—"; }
 
+    # ------------------------------------------------------------
+    # REPLI RÉSEAU : si mdls n'a rien donné (Spotlight n'indexe pas
+    # les volumes réseau), on lit ce qu'on peut via ffprobe + strings.
+    # ------------------------------------------------------------
+    braw_source="Spotlight"
+    if [[ -z "$b_res" && -n "$FFPROBE" ]]; then
+        braw_source="réseau (partiel)"
+        vinfo=$("$FFPROBE" -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,bit_rate \
+            -of default=noprint_wrappers=1 "$f" 2>/dev/null)
+        bw=$(echo "$vinfo" | grep '^width=' | cut -d= -f2)
+        bh=$(echo "$vinfo" | grep '^height=' | cut -d= -f2)
+        [[ -n "$bw" && -n "$bh" ]] && b_res="$bw × $bh"
+
+        frac=$(echo "$vinfo" | grep '^r_frame_rate=' | cut -d= -f2)
+        if [[ -n "$frac" && "$frac" != "0/0" ]]; then
+            b_rate=$(echo "$frac" | awk -F/ '{ v=($2>0)?$1/$2:$1;
+                if (v==int(v)) printf "%d fps", v; else printf "%.3f fps", v }')
+        fi
+
+        bbr=$(echo "$vinfo" | grep '^bit_rate=' | cut -d= -f2)
+        [[ -z "$bbr" || "$bbr" == "N/A" ]] && bbr=$("$FFPROBE" -v error \
+            -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null)
+        if [[ -n "$bbr" && "$bbr" != "N/A" ]]; then
+            b_bitrate_raw="$bbr"
+            b_bitrate=$(awk -v b="$bbr" 'BEGIN { printf "%.0f Mb/s", b/1000000 }')
+        fi
+
+        # Durée réelle via ffprobe (plus fiable que l'estimation ici)
+        secs=$("$FFPROBE" -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null)
+
+        # Réglages de prise lisibles en clair dans l'en-tête du .braw
+        # (on limite à un échantillon pour rester rapide sur gros fichiers réseau)
+        raw_strings=$(strings -n 4 "$f" 2>/dev/null | grep -m 40 -E "aptr|fcln|shtv|dsnc")
+        pick() { echo "$raw_strings" | grep -m1 "$1" | sed "s/.*$1//" | tr -d '\r' | xargs 2>/dev/null; }
+        [[ -z "$b_aperture" ]] && b_aperture=$(pick "aptr")
+        [[ -z "$b_focal"    ]] && b_focal=$(pick "fcln")
+        [[ -z "$b_shutter"  ]] && b_shutter=$(pick "shtv")
+        b_focusdist=$(pick "dsnc")
+    fi
+
     # Compression + débit sur une ligne
-    compression="—"
+    compression=""
     [[ -n "$b_ratio" ]] && compression="$b_ratio"
-    [[ -n "$b_bitrate" ]] && compression="${compression} · ${b_bitrate}"
+    [[ -n "$b_bitrate" ]] && compression="${compression:+$compression · }$b_bitrate"
+    [[ -z "$compression" ]] && compression="—"
 
     # Caméra + firmware
     camera=$(nd "$b_cam")
@@ -232,6 +276,7 @@ if [[ "${${f##*.}:l}" == "braw" ]]; then
         [[ -n "$b_tint" && "$b_tint" != "0" ]] && wbtxt="$wbtxt, tint $b_tint"
         shot="${shot:+$shot · }WB $wbtxt"
     fi
+    [[ -n "$b_focusdist" ]] && shot="${shot:+$shot · }focus $b_focusdist"
     [[ -z "$shot" ]] && shot="—"
 
     # Gamma / Gamut
@@ -239,9 +284,16 @@ if [[ "${${f##*.}:l}" == "braw" ]]; then
     [[ -n "$b_gamma" ]] && gg="$b_gamma"
     [[ -n "$b_gamut" ]] && gg="${gg} / ${b_gamut}"
 
-    # Durée estimée : taille × 8 ÷ débit (fiable car BRAW à compression constante)
+    # Durée : réelle via ffprobe si dispo (réseau), sinon estimée (taille × 8 ÷ débit)
     braw_duration=""
-    if [[ -n "$b_bitrate_raw" && "$b_bitrate_raw" != "0" && "$bytes" -gt 0 ]]; then
+    if [[ -n "$secs" && "$secs" != "N/A" ]]; then
+        braw_duration=$(awk -v t="$secs" 'BEGIN {
+            s = int(t + 0.5); h = int(s/3600); m = int((s%3600)/60); sec = s%60
+            if (h > 0) printf "%dh %02dm %02ds", h, m, sec
+            else if (m > 0) printf "%dm %02ds", m, sec
+            else printf "%ds", sec
+        }')
+    elif [[ -n "$b_bitrate_raw" && "$b_bitrate_raw" != "0" && "$bytes" -gt 0 ]]; then
         braw_duration=$(awk -v sz="$bytes" -v br="$b_bitrate_raw" 'BEGIN {
             t = (sz * 8) / br
             s = int(t + 0.5); h = int(s/3600); m = int((s%3600)/60); sec = s%60
@@ -297,7 +349,8 @@ $SEP
 
 ⏱	Duration:	$(nd "$braw_duration")
 💾	File size:	$size
-📦	Container:	Blackmagic RAW (.$ext)"
+📦	Container:	Blackmagic RAW (.$ext)
+🔎	Metadata:	$braw_source"
 
     print -r -- "$msg"
     exit 0
