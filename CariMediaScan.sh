@@ -219,7 +219,7 @@ if [[ "${${f##*.}:l}" == "braw" ]]; then
     # ------------------------------------------------------------
     braw_source="Spotlight"
     if [[ -z "$b_res" && -n "$FFPROBE" ]]; then
-        braw_source="réseau (partiel)"
+        braw_source="Métadonnées BRAW indisponibles sur volume réseau — copier le fichier en local ou l'indexer"
         vinfo=$("$FFPROBE" -v error -select_streams v:0 \
             -show_entries stream=width,height,r_frame_rate,bit_rate \
             -of default=noprint_wrappers=1 "$f" 2>/dev/null)
@@ -1195,9 +1195,48 @@ function run(argv) {
         setReport(ST.tv, currentMsg);
         ST.tv.scrollRangeToVisible($.NSMakeRange(0, 0));  // revient en haut
         btnCopy.setTitle('Copy');
-        layoutNav();
+        layoutNav();            // 1) cale la largeur de la zone de texte
+        fitWindowToContent();   // 2) ajuste la hauteur de la fenêtre au contenu
+        layoutNav();            // 3) repositionne tout dans la nouvelle hauteur
         win.setTitle('CariMediaScan ----------  v' + APP_VERSION +
                      ' by Caribou Labs 🦌 ·  ' + (index + 1) + '/' + files.length);
+    }
+
+    // Ajuste la hauteur de la fenêtre pour afficher tout le rapport sans défiler
+    // (borné à la hauteur de l'écran ; la fenêtre reste redimensionnable ensuite)
+    function fitWindowToContent() {
+        try {
+            // Force la mise en page du texte pour mesurer sa hauteur réelle
+            const lm = ST.tv.layoutManager;
+            const tc = ST.tv.textContainer;
+            lm.ensureLayoutForTextContainer(tc);
+            const textH = lm.usedRectForTextContainer(tc).size.height;
+
+            let topReserve = 0;
+            if (coverShown) {
+                const sz = coverView.image.size;
+                const scale = Math.min(coverMax / sz.width, coverMax / sz.height, 1);
+                topReserve = Math.round(sz.height * scale) + 12;
+            }
+
+            const wantContentH = pad + btnH + gap + Math.ceil(textH) + 8 + topReserve + pad;
+
+            // Ne pas dépasser ~92% de la hauteur de l'écran visible
+            const scr = win.screen;
+            const maxH = scr.isNil() ? 1000 : scr.visibleFrame.size.height * 0.92;
+            const finalContentH = Math.min(wantContentH, maxH);
+
+            // Nouvelle frame : même largeur/position X, bord supérieur fixe
+            const old = win.frame;
+            const chrome = old.size.height - win.contentRectForFrameRect(old).size.height;
+            const newFrameH = finalContentH + chrome;
+            win.setFrameDisplay(
+                $.NSMakeRect(old.origin.x,
+                             old.origin.y + old.size.height - newFrameH,
+                             old.size.width,
+                             newFrameH),
+                true);
+        } catch (e) {}
     }
 
     goPrev = function() { show(index - 1); };
